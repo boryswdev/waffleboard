@@ -44,6 +44,7 @@ in one folder (not nested) — `install.sh` will tell you clearly if
 ### option 1 — install script (recommended)
 
 ```bash
+git clone https://github.com/boryswdev/waffleboard
 chmod +x install.sh
 ./install.sh
 ```
@@ -69,6 +70,7 @@ waffleboard
 ### option 2 — run without installing
 
 ```bash
+git clone https://github.com/boryswdev/waffleboard
 pip install -r requirements.txt --break-system-packages
 python3 waffleboard.py
 ```
@@ -76,6 +78,7 @@ python3 waffleboard.py
 or inside a venv of your own:
 
 ```bash
+git clone https://github.com/boryswdev/waffleboard
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
