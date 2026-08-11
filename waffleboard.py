@@ -21,6 +21,7 @@ import platform
 import shutil
 import socket
 import subprocess
+import time
 from collections import deque
 from dataclasses import dataclass
 
@@ -32,7 +33,7 @@ from textual.reactive import reactive
 from textual.timer import Timer
 from textual.widgets import Footer, Header, Label, ProgressBar, Static
 
-REFRESH_TIME = 1.0  # seconds
+REFRESH_TIME = 1.0  
 
 def get_cpu_model() -> str:
     """read the CPU model name, ;inux-specific via /proc/cpuinfo."""
@@ -135,13 +136,92 @@ def get_gpu_usage() -> float | None:
     return read_amd_gpu()
 
 
+def format_uptime(seconds: float) -> str:
+    days = int(seconds // 86400)
+    hours = int((seconds % 86400) // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def get_uptime() -> str:
+    try:
+        return format_uptime(time.time() - psutil.boot_time())
+    except Exception:
+        return "unknown"
+
+
+def get_cpu_temp() -> float | None:
+    try:
+        temps = psutil.sensors_temperatures()
+        if temps:
+            for key in ("coretemp", "k10temp", "cpu_thermal", "acpitz", "amdgpu", "nct6791"):
+                if key in temps:
+                    for entry in temps[key]:
+                        if entry.current and entry.current > 0:
+                            return entry.current
+            for entries in temps.values():
+                for entry in entries:
+                    if entry.current and entry.current > 0:
+                        return entry.current
+    except Exception:
+        pass
+
+    for zone in pathlib.Path("/sys/class/thermal").glob("thermal_zone*/temp"):
+        try:
+            if (zone.parent / "type").exists():
+                kind = (zone.parent / "type").read_text().strip().lower()
+                if "cpu" in kind or "package" in kind or "core" in kind:
+                    value = float(zone.read_text().strip()) / 1000.0
+                    if value > 0:
+                        return value
+        except Exception:
+            continue
+    return None
+
+
+def get_gpu_temp() -> float | None:
+    exe = shutil.which("nvidia-smi")
+    if exe:
+        try:
+            result = subprocess.run(
+                [exe, "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return float(result.stdout.strip().splitlines()[0].strip())
+        except Exception:
+            pass
+
+    for temp_file in pathlib.Path("/sys/class/drm").glob("card*/device/hwmon/hwmon*/temp*_input"):
+        try:
+            value = float(temp_file.read_text().strip())
+            if value > 0:
+                return value / 1000.0 if value > 1000 else value
+        except Exception:
+            continue
+
+    return None
+
+
 @dataclass
 class SystemStats:
     cpu: float
     ram: float
     gpu: float | None
+    cpu_temp: float | None
+    gpu_temp: float | None
     ram_used_gb: float
     ram_total_gb: float
+    uptime: str
 
 
 def collect_stats() -> SystemStats:
@@ -152,8 +232,11 @@ def collect_stats() -> SystemStats:
         cpu = cpu,
         ram = vm.percent,
         gpu = get_gpu_usage(),
+        cpu_temp = get_cpu_temp(),
+        gpu_temp = get_gpu_temp(),
         ram_used_gb = vm.used / (1024 ** 3),
         ram_total_gb = vm.total / (1024 ** 3),
+        uptime = get_uptime(),
     )
 
 
@@ -206,9 +289,9 @@ class StatCard(Vertical):
 
 class Wave(Static):
 
-    LEVELS = " ▁▂▃▄▅▆▇█" # tried to implement a cool wave -> doesn't work lol
+    LEVELS = "▁▂▃▄▅▆▇█▇▆▅▄▃▂▁"
 
-    def __init__(self, history_len: int = 16, **kwargs) -> None:
+    def __init__(self, history_len: int = 24, **kwargs) -> None:
         super().__init__("", **kwargs)
         self._history: deque[float] = deque([0.0] * history_len, maxlen=history_len)
         self._redraw()
@@ -219,9 +302,12 @@ class Wave(Static):
 
     def _redraw(self) -> None:
         chars = []
-        for v in self._history:
-            idx = int(round(v / 100 * (len(self.LEVELS) - 1)))
-            chars.append(self.LEVELS[idx])
+        amplitude = len(self.LEVELS) - 1
+        for index, v in enumerate(self._history):
+            phase = (index / len(self._history)) * 2 * 3.141592653589793
+            level = int(round((v / 100) * amplitude))
+            offset = int(round((0.5 + 0.5 * __import__("math").sin(phase)) * level))
+            chars.append(self.LEVELS[min(max(offset, 0), amplitude)])
         self.update(f"[#bc8cff]{''.join(chars)}[/#bc8cff]")
 
 class WaffleboardApp(App):
@@ -328,7 +414,11 @@ class WaffleboardApp(App):
                 with Panel("system", subtitle = self.hw.hostname, id="panel-system"):
                     yield StatCard("CPU", subtitle = self.hw.cpu_model, id="cpu")
                     yield StatCard("GPU", subtitle = self.hw.gpu_model or "no GPU detected", id="gpu")
+                    yield StatCard("CPU Temp", subtitle = "temperature", id="cpu_temp")
+                    yield StatCard("GPU Temp", subtitle = "temperature", id="gpu_temp")
                     yield StatCard("RAM", subtitle = f"{self.hw.ram_total_gb:.1f} GB total", id="ram")
+                    yield Label("[bold]Uptime[/bold]", classes="card-title", markup=True)
+                    yield Static("", classes="card-detail", id="uptime")
                 with Panel("wave", id="panel-wave"):
                     yield Wave(id="wave")
 
@@ -353,9 +443,18 @@ class WaffleboardApp(App):
         self.query_one("#gpu", StatCard).update_stat(
             stats.gpu, "" if stats.gpu is not None else "usage unavailable"
         )
+        self.query_one("#cpu_temp", StatCard).update_stat(
+            min(stats.cpu_temp, 100.0) if stats.cpu_temp is not None else None,
+            f"{stats.cpu_temp:.1f}°C" if stats.cpu_temp is not None else "temperature unavailable",
+        )
+        self.query_one("#gpu_temp", StatCard).update_stat(
+            min(stats.gpu_temp, 100.0) if stats.gpu_temp is not None else None,
+            f"{stats.gpu_temp:.1f}°C" if stats.gpu_temp is not None else "temperature unavailable",
+        )
         self.query_one("#ram", StatCard).update_stat(
             stats.ram, f"{stats.ram_used_gb:.1f} / {stats.ram_total_gb:.1f} GB"
         )
+        self.query_one("#uptime", Static).update(stats.uptime)
         self.query_one("#wave", Wave).push(stats.cpu)
 
 

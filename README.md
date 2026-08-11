@@ -99,7 +99,7 @@ this v1.0 is intentionally minimal so it can be tested end-to-end first.
 planned next steps, per the original
 project proposal:
 
-- [ ] live process table (PID, user, CPU%, MEM%, command)
+- [✅] live process table (PID, user, CPU%, MEM%, command)
 - [ ] simple security heuristics (e.g. processes running from `/tmp`,
       unusual network connections, unsigned/unexpected binaries)
 - [ ] SHA256 hashing of executables via `hashlib`, flag hash changes
