@@ -45,6 +45,7 @@ in one folder (not nested) — `install.sh` will tell you clearly if
 
 ```bash
 git clone https://github.com/boryswdev/waffleboard
+cd waffleboard
 chmod +x install.sh
 ./install.sh
 ```
@@ -99,7 +100,7 @@ this v1.0 is intentionally minimal so it can be tested end-to-end first.
 planned next steps, per the original
 project proposal:
 
-- [✅] live process table (PID, user, CPU%, MEM%, command)
+- [ ] live process table (PID, user, CPU%, MEM%, command)
 - [ ] simple security heuristics (e.g. processes running from `/tmp`,
       unusual network connections, unsigned/unexpected binaries)
 - [ ] SHA256 hashing of executables via `hashlib`, flag hash changes
@@ -107,6 +108,7 @@ project proposal:
 - [ ] JSON export of findings via `json` / `pathlib` # who is json??
 - [ ] process drill-down / kill from the UI
 - [ ] config file for custom rules and thresholds
+
 
 ## other
 
