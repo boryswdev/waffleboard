@@ -45,6 +45,7 @@ in one folder (not nested) — `install.sh` will tell you clearly if
 
 ```bash
 git clone https://github.com/boryswdev/waffleboard
+cd waffleboard
 chmod +x install.sh
 ./install.sh
 ```
