@@ -342,17 +342,18 @@ class WaffleboardApp(App):
     }
 
     Panel {
-        background: black;
+        background: #05060a;
         padding: 0 1;
         height: 100%;
         overflow: hidden;
+        color: $text;
     }
 
-    #panel-system    { border: round #58a6ff; width: 3fr; }
-    #panel-wave      { border: round #bc8cff; width: 1fr; }
-    #panel-processes { border: round #f85149; row-span: 2; }
-    #panel-network   { border: round #3fb950; height: 1fr; }
-    #panel-storage   { border: round #d29922; height: 1fr; }
+    #panel-system    { border: round #2f6b9a; width: 3fr; }
+    #panel-wave      { border: round #6f4db8; width: 1fr; }
+    #panel-processes { border: round #a23b3b; row-span: 2; }
+    #panel-network   { border: round #2f8a4e; height: 1fr; }
+    #panel-storage   { border: round #b67a1a; height: 1fr; }
 
     Wave {
         height: auto;
@@ -393,6 +394,9 @@ class WaffleboardApp(App):
     StatCard.sev-crit  ProgressBar > .bar--bar { color: #f85149; }
     StatCard.sev-none  ProgressBar > .bar--bar { color: #545862; }
 
+    /* btop-like titles */
+    .card-title { text-style: bold; color: $text; }
+
     Header { background: black; }
     Footer { background: black; }
     """
@@ -412,13 +416,16 @@ class WaffleboardApp(App):
         with Grid(id="root-grid"):
             with Horizontal(id="top-left-row"):
                 with Panel("system", subtitle = self.hw.hostname, id="panel-system"):
-                    yield StatCard("CPU", subtitle = self.hw.cpu_model, id="cpu")
-                    yield StatCard("GPU", subtitle = self.hw.gpu_model or "no GPU detected", id="gpu")
-                    yield StatCard("CPU Temp", subtitle = "temperature", id="cpu_temp")
-                    yield StatCard("GPU Temp", subtitle = "temperature", id="gpu_temp")
-                    yield StatCard("RAM", subtitle = f"{self.hw.ram_total_gb:.1f} GB total", id="ram")
-                    yield Label("[bold]Uptime[/bold]", classes="card-title", markup=True)
-                    yield Static("", classes="card-detail", id="uptime")
+                        with Horizontal():
+                            with Vertical():
+                                yield StatCard("CPU", subtitle = self.hw.cpu_model, id="cpu")
+                                yield StatCard("CPU Temp", subtitle = "temperature", id="cpu_temp")
+                                yield StatCard("RAM", subtitle = f"{self.hw.ram_total_gb:.1f} GB total", id="ram")
+                                yield Label("[bold]Uptime[/bold]", classes="card-title", markup=True)
+                                yield Static("", classes="card-detail", id="uptime")
+                            with Vertical():
+                                yield StatCard("GPU", subtitle = self.hw.gpu_model or "no GPU detected", id="gpu")
+                                yield StatCard("GPU Temp", subtitle = "temperature", id="gpu_temp")
                 with Panel("wave", id="panel-wave"):
                     yield Wave(id="wave")
 
@@ -455,7 +462,16 @@ class WaffleboardApp(App):
             stats.ram, f"{stats.ram_used_gb:.1f} / {stats.ram_total_gb:.1f} GB"
         )
         self.query_one("#uptime", Static).update(stats.uptime)
-        self.query_one("#wave", Wave).push(stats.cpu)
+        # Make the wave react primarily to GPU temperature (mapped to 0-100).
+        gpu_temp = stats.gpu_temp
+        if gpu_temp is not None:
+            # map typical temp range 20..90°C to 0..100
+            t = float(gpu_temp)
+            mapped = max(0.0, min(100.0, (t - 20.0) / (90.0 - 20.0) * 100.0))
+        else:
+            # fallback to CPU percentage
+            mapped = stats.cpu
+        self.query_one("#wave", Wave).push(mapped)
 
 
 def run() -> None:
