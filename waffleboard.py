@@ -247,6 +247,14 @@ def severity(pct: float) -> str:
         return "sev-warn"
     return "sev-crit"
 
+
+def temperature_severity(temp: float) -> str:
+    if temp < 70.0:
+        return "temp-ok"
+    if temp < 85.0:
+        return "temp-warn"
+    return "temp-crit"
+
 class Panel(Vertical):
     def __init__(self, title: str, subtitle: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
@@ -258,33 +266,38 @@ class Panel(Vertical):
 class StatCard(Vertical):
     percent: reactive[float] = reactive(0.0)
 
-    def __init__(self, title: str, subtitle: str = "", **kwargs) -> None:
+    def __init__(self, title: str, subtitle: str = "", show_bar: bool = True, **kwargs) -> None:
         super().__init__(**kwargs)
         self.title_text = title
         self.subtitle = subtitle
+        self.show_bar = show_bar
 
     def compose(self) -> ComposeResult:
         yield Label(f"[bold]{self.title_text}[/bold]", classes="card-title", markup=True)
         if self.subtitle:
             yield Static(self.subtitle, classes="card-subtitle")
-        yield ProgressBar(total=100, show_eta=False, id=f"bar-{self.id}")
+        if self.show_bar:
+            yield ProgressBar(total=100, show_eta=False, id=f"bar-{self.id}")
         yield Static("", classes="card-detail", id=f"detail-{self.id}")
 
-    def update_stat(self, percent: float | None, detail: str = "") -> None:
-        bar = self.query_one(ProgressBar)
+    def update_stat(self, percent: float | None, detail: str = "", severity_class: str | None = None) -> None:
         detail_widget = self.query_one(f"#detail-{self.id}", Static)
+        bar = self.query_one(ProgressBar) if self.show_bar else None
 
-        self.remove_class("sev-ok", "sev-warn", "sev-crit", "sev-none")
+        self.remove_class("sev-ok", "sev-warn", "sev-crit", "sev-none", "temp-ok", "temp-warn", "temp-crit", "temp-none")
 
         if percent is None:
-            bar.update(progress=0)
+            if bar is not None:
+                bar.update(progress=0)
             detail_widget.update("not available")
-            self.add_class("sev-none")
+            self.add_class("temp-none")
             return
 
-        bar.update(progress=percent)
-        detail_widget.update(f"{percent:5.1f}%  {detail}".strip())
-        self.add_class(severity(percent))
+        if bar is not None:
+            bar.update(progress=percent)
+
+        detail_widget.update(detail)
+        self.add_class(severity_class or severity(percent))
 
 
 class Wave(Static):
@@ -310,7 +323,7 @@ class Wave(Static):
             chars.append(self.LEVELS[min(max(offset, 0), amplitude)])
         self.update(f"[#bc8cff]{''.join(chars)}[/#bc8cff]")
 
-class WaffleboardApp(App):
+class waffleboardApp(App):
     """waffleboard - linux security process monitor"""
 
     TITLE = "waffleboard"
@@ -349,10 +362,10 @@ class WaffleboardApp(App):
         color: $text;
     }
 
-    #panel-system    { border: round #2f6b9a; width: 3fr; }
-    #panel-wave      { border: round #6f4db8; width: 1fr; }
-    #panel-processes { border: round #a23b3b; row-span: 2; }
-    #panel-network   { border: round #2f8a4e; height: 1fr; }
+    #panel-system        { border: round #2f6b9a; width: 3fr; }
+    #panel-network-graph { border: round #6f4db8; width: 1fr; }
+    #panel-processes     { border: round #a23b3b; row-span: 2; }
+    #panel-network       { border: round #2f8a4e; height: 1fr; }
     #panel-storage   { border: round #b67a1a; height: 1fr; }
 
     Wave {
@@ -380,8 +393,13 @@ class WaffleboardApp(App):
 
     .card-detail {
         color: $text-muted;
-        height: 1;
+        height: auto;
     }
+
+    StatCard.temp-ok .card-detail { color: #3fb950; }
+    StatCard.temp-warn .card-detail { color: #d29922; }
+    StatCard.temp-crit .card-detail { color: #f85149; }
+    StatCard.temp-none .card-detail { color: $text-muted; }
 
     ProgressBar {
         width: 100%;
@@ -409,6 +427,21 @@ class WaffleboardApp(App):
         super().__init__(*args, **kwargs)
         self._timer: Timer | None = None
         self.hw = hardware_info()
+        self._last_net_bytes = psutil.net_io_counters().bytes_sent + psutil.net_io_counters().bytes_recv
+        self._last_net_time = time.time()
+
+    def update_network_rate(self) -> tuple[float, float]:
+        counters = psutil.net_io_counters()
+        now = time.time()
+        total_bytes = counters.bytes_sent + counters.bytes_recv
+        delta = max(0.0, total_bytes - self._last_net_bytes)
+        elapsed = max(1e-6, now - self._last_net_time)
+        self._last_net_bytes = total_bytes
+        self._last_net_time = now
+        bytes_per_second = delta / elapsed
+        # Map bytes per second to 0..100, using 10 MB/s as 100%.
+        mapped = min(100.0, (bytes_per_second / (1024**2)) * 10.0)
+        return bytes_per_second, mapped
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -419,15 +452,15 @@ class WaffleboardApp(App):
                         with Horizontal():
                             with Vertical():
                                 yield StatCard("CPU", subtitle = self.hw.cpu_model, id="cpu")
-                                yield StatCard("CPU Temp", subtitle = "temperature", id="cpu_temp")
-                                yield StatCard("RAM", subtitle = f"{self.hw.ram_total_gb:.1f} GB total", id="ram")
-                                yield Label("[bold]Uptime[/bold]", classes="card-title", markup=True)
-                                yield Static("", classes="card-detail", id="uptime")
+                                yield StatCard("CPU Temp", subtitle = "temperature", id="cpu_temp", show_bar=False)
+                                yield StatCard("Uptime", show_bar=False, id="uptime")
                             with Vertical():
                                 yield StatCard("GPU", subtitle = self.hw.gpu_model or "no GPU detected", id="gpu")
-                                yield StatCard("GPU Temp", subtitle = "temperature", id="gpu_temp")
-                with Panel("wave", id="panel-wave"):
-                    yield Wave(id="wave")
+                                yield StatCard("GPU Temp", subtitle = "temperature", id="gpu_temp", show_bar=False)
+                                yield StatCard("RAM", subtitle = f"{self.hw.ram_total_gb:.1f} GB total", id="ram")
+                with Panel("network", id="panel-network-graph"):
+                    yield Static("", classes="card-detail", id="network-rate")
+                    yield Wave(id="network-wave")
 
             yield Panel("processes", id="panel-processes")
 
@@ -451,32 +484,28 @@ class WaffleboardApp(App):
             stats.gpu, "" if stats.gpu is not None else "usage unavailable"
         )
         self.query_one("#cpu_temp", StatCard).update_stat(
-            min(stats.cpu_temp, 100.0) if stats.cpu_temp is not None else None,
+            stats.cpu_temp,
             f"{stats.cpu_temp:.1f}°C" if stats.cpu_temp is not None else "temperature unavailable",
+            temperature_severity(stats.cpu_temp) if stats.cpu_temp is not None else None,
         )
         self.query_one("#gpu_temp", StatCard).update_stat(
-            min(stats.gpu_temp, 100.0) if stats.gpu_temp is not None else None,
+            stats.gpu_temp,
             f"{stats.gpu_temp:.1f}°C" if stats.gpu_temp is not None else "temperature unavailable",
+            temperature_severity(stats.gpu_temp) if stats.gpu_temp is not None else None,
         )
         self.query_one("#ram", StatCard).update_stat(
             stats.ram, f"{stats.ram_used_gb:.1f} / {stats.ram_total_gb:.1f} GB"
         )
-        self.query_one("#uptime", Static).update(stats.uptime)
-        # Make the wave react primarily to GPU temperature (mapped to 0-100).
-        gpu_temp = stats.gpu_temp
-        if gpu_temp is not None:
-            # map typical temp range 20..90°C to 0..100
-            t = float(gpu_temp)
-            mapped = max(0.0, min(100.0, (t - 20.0) / (90.0 - 20.0) * 100.0))
-        else:
-            # fallback to CPU percentage
-            mapped = stats.cpu
-        self.query_one("#wave", Wave).push(mapped)
+        self.query_one("#uptime", StatCard).update_stat(0.0, stats.uptime)
+
+        network_bytes, network_rate = self.update_network_rate()
+        self.query_one("#network-rate", Static).update(f"{network_bytes / (1024**2):.2f} MB/s")
+        self.query_one("#network-wave", Wave).push(network_rate)
 
 
 def run() -> None:
     """entry point used by the `waffleboard` launcher."""
-    WaffleboardApp().run()
+    waffleboardApp().run()
 
 
 if __name__ == "__main__":
