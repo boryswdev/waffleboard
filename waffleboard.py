@@ -31,7 +31,8 @@ from textual.app import App, ComposeResult
 from textual.containers import Grid, Horizontal, Vertical
 from textual.reactive import reactive
 from textual.timer import Timer
-from textual.widgets import Footer, Header, Label, ProgressBar, Static
+from textual.widgets import Header, Label, ProgressBar, Static
+from textual.events import Key
 
 REFRESH_TIME = 1.0  
 
@@ -330,9 +331,7 @@ class waffleboardApp(App):
     ENABLE_COMMAND_PALETTE = False
 
     CSS = """
-    Screen {
-        background: black;
-    }
+    Screen { background: #0b0f14; }
 
     #root-grid {
         layout: grid;
@@ -344,91 +343,126 @@ class waffleboardApp(App):
         padding: 0 1 1 1;
     }
 
-    #top-left-row {
-        width: 100%;
-        height: 100%;
-    }
-
-    #bottom-left-row {
-        width: 100%;
-        height: 100%;
-    }
+    #top-left-row { width: 100%; height: 100%; }
+    #bottom-left-row { width: 100%; height: 100%; }
 
     Panel {
-        background: #05060a;
-        padding: 0 1;
+        background: #081016;
+        padding: 1 2;
         height: 100%;
         overflow: hidden;
         color: $text;
+        border: round #22303a;
     }
 
-    #panel-system        { border: round #2f6b9a; width: 3fr; }
-    #panel-network-graph { border: round #6f4db8; width: 1fr; }
-    #panel-processes     { border: round #a23b3b; row-span: 2; }
-    #panel-network       { border: round #2f8a4e; height: 1fr; }
-    #panel-storage   { border: round #b67a1a; height: 1fr; }
+    #panel-system        { width: 3fr; }
+    #panel-network-graph { width: 1fr; }
+    #panel-processes     { row-span: 2; width: 2fr; }
+    #panel-network       { height: 1fr; }
+    #panel-storage       { height: 1fr; }
+    #panel-processes { overflow: auto; }
 
     Wave {
         height: auto;
         content-align: center middle;
+        color: #8b9ac6;
     }
 
     StatCard {
         border: none;
-        padding: 0;
+        padding: 0 0 1 0;
         height: auto;
         margin: 0 0 1 0;
     }
 
-    .card-title {
-        text-style: bold;
-        color: $text;
-        height: 1;
-    }
-
-    .card-subtitle {
-        color: $text-muted;
-        height: auto;
-    }
-
-    .card-detail {
-        color: $text-muted;
-        height: auto;
-    }
+    .card-title { text-style: bold; color: $text; height: 1; }
+    .card-subtitle { color: $text-muted; height: auto; }
+    .card-detail { color: $text-muted; height: auto; }
 
     StatCard.temp-ok .card-detail { color: #3fb950; }
     StatCard.temp-warn .card-detail { color: #d29922; }
     StatCard.temp-crit .card-detail { color: #f85149; }
     StatCard.temp-none .card-detail { color: $text-muted; }
 
-    ProgressBar {
-        width: 100%;
-        height: 1;
-    }
-
-    ProgressBar > .bar--bar        { color: #58a6ff; }
+    ProgressBar { width: 100%; height: 1; }
+    ProgressBar > .bar--bar { color: #58a6ff; }
     StatCard.sev-ok    ProgressBar > .bar--bar { color: #3fb950; }
     StatCard.sev-warn  ProgressBar > .bar--bar { color: #d29922; }
     StatCard.sev-crit  ProgressBar > .bar--bar { color: #f85149; }
     StatCard.sev-none  ProgressBar > .bar--bar { color: #545862; }
 
-    /* btop-like titles */
-    .card-title { text-style: bold; color: $text; }
+    /* processes list styling */
+    #process-list {
+        content-align: left top;
+        padding: 0 1;
+        color: $text-muted;
+        height: 100%;
+    }
 
-    Header { background: black; }
-    Footer { background: black; }
+    #footer-right { color: $text-muted; content-align: right middle; width: 100%; }
+
+    Header { background: transparent; }
+    Footer { background: transparent; }
+
+    /* bottom bar showing quit hint */
+    #bottom-bar {
+        height: 1;
+        padding: 0 1;
+        background: transparent;
+        content-align: left middle;
+    }
+
+    #quit-hint {
+        color: $text-muted;
+        text-style: bold;
+        width: auto;
+        padding-right: 2;
+    }
     """
 
-    BINDINGS = [
-        ("q", "quit", "quit"),
-    ]
+    def on_key(self, event: Key) -> None:
+        """Ensure 'q' quits even if a widget has focus."""
+        key = event.key
+        if key == "q":
+            self.exit()
 
+        # scrolling keys for process list
+        if key in ("pageup", "pagedown", "up", "down", "j", "k", "home", "end"):
+            try:
+                total = len(self._proc_lines)
+                if total == 0:
+                    return
+                page = self._proc_visible
+                if key == "pageup":
+                    self._proc_scroll = max(0, self._proc_scroll - page)
+                elif key == "pagedown":
+                    self._proc_scroll = min(max(0, total - page), self._proc_scroll + page)
+                elif key in ("up", "k"):
+                    self._proc_scroll = max(0, self._proc_scroll - 1)
+                elif key in ("down", "j"):
+                    self._proc_scroll = min(max(0, total - self._proc_visible), self._proc_scroll + 1)
+                elif key == "home":
+                    self._proc_scroll = 0
+                elif key == "end":
+                    self._proc_scroll = max(0, total - page)
+                self.update_process_display()
+            except Exception:
+                pass
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._timer: Timer | None = None
         self.hw = hardware_info()
         self._last_net_bytes = psutil.net_io_counters().bytes_sent + psutil.net_io_counters().bytes_recv
         self._last_net_time = time.time()
+        # per-process smoothing state: pid -> recent normalized cpu% deque
+        self._proc_history: dict[int, deque[float]] = {}
+        # last-seen refresh counter for pruning
+        self._proc_last_seen: dict[int, int] = {}
+        self._refresh_counter = 0
+        # process list lines and scroll state (for manual scrolling)
+        self._proc_lines: list[str] = []
+        self._proc_scroll: int = 0
+        self._proc_visible: int = 15
 
     def update_network_rate(self) -> tuple[float, float]:
         counters = psutil.net_io_counters()
@@ -462,13 +496,17 @@ class waffleboardApp(App):
                     yield Static("", classes="card-detail", id="network-rate")
                     yield Wave(id="network-wave")
 
-            yield Panel("processes", id="panel-processes")
+            with Panel("processes", id="panel-processes"):
+                yield Static("", id="process-list")
 
             with Vertical(id="bottom-left-row"):
                 yield Panel("network", id="panel-network")
                 yield Panel("storage", id="panel-storage")
 
-        yield Footer()
+        # bottom bar: left shows quit hint, right shows a status field
+        with Horizontal(id="bottom-bar"):
+            yield Static("q: Quit", id="quit-hint")
+            yield Static("", id="footer-right")
 
     def on_mount(self) -> None:
         self.sub_title = f"{self.hw.hostname} • {self.hw.os_info}"
@@ -501,6 +539,95 @@ class waffleboardApp(App):
         network_bytes, network_rate = self.update_network_rate()
         self.query_one("#network-rate", Static).update(f"{network_bytes / (1024**2):.2f} MB/s")
         self.query_one("#network-wave", Wave).push(network_rate)
+        # Update process list panel
+        try:
+            self.update_process_list()
+        except Exception:
+            # don't let process-list errors break refresh
+            pass
+        # update footer-right with clock/status
+        try:
+            self.query_one("#footer-right", Static).update(f"{self.hw.hostname} • {self.hw.os_info}  {time.strftime('%H:%M:%S')}")
+        except Exception:
+            pass
+
+    def update_process_list(self, limit: int = 50) -> None:
+        """populate the processes panel with current PID, CPU%, RAM%, and name.
+
+        we show the top `limit` processes by CPU percent.
+        """
+        rows = []
+        try:
+            # advance refresh counter for last-seen tracking
+            self._refresh_counter += 1
+            # iterate processes with common attributes; some may raise during access
+            procs = list(psutil.process_iter(attrs=("pid", "name", "cpu_percent", "memory_percent")))
+            # ensure we have recent cpu_percent values by calling once (non-blocking)
+            # update histories for smoothing and filter transient short-lived processes
+            cpus = psutil.cpu_count(logical=True) or 1
+            current_pids: set[int] = set()
+            for p in procs:
+                pid = int(p.info.get("pid") or 0)
+                current_pids.add(pid)
+                try:
+                    raw = float(p.cpu_percent(interval=None) or 0.0)
+                except Exception:
+                    raw = float(p.info.get("cpu_percent") or 0.0) or 0.0
+                norm = raw / cpus
+
+                hist = self._proc_history.get(pid)
+                if hist is None:
+                    hist = deque(maxlen=3)
+                    self._proc_history[pid] = hist
+                hist.append(norm)
+                self._proc_last_seen[pid] = self._refresh_counter
+
+            # prune old histories for processes not seen recently
+            to_prune = [pid for pid, last in self._proc_last_seen.items() if (self._refresh_counter - last) > 5]
+            for pid in to_prune:
+                self._proc_last_seen.pop(pid, None)
+                self._proc_history.pop(pid, None)
+
+            # build list of (pid, avg_cpu, mem, name) for processes with at least 2 samples
+            entries: list[tuple[int, float, float, str]] = []
+            for p in procs:
+                pid = int(p.info.get("pid") or 0)
+                hist = self._proc_history.get(pid)
+                if not hist or len(hist) < 1:
+                    continue
+                avg_cpu = sum(hist) / len(hist)
+                mem = float(p.info.get("memory_percent") or 0.0)
+                name = (p.info.get("name") or "")[:40]
+                entries.append((pid, avg_cpu, mem, name))
+
+            entries.sort(key=lambda e: e[1], reverse=True)
+
+            rows.append(f"{'PID':>6} {'CPU%':>8} {'RAM%':>6} NAME")
+            rows.append("─" * 60)
+
+            for pid, cpu, mem, name in entries[:limit]:
+                rows.append(f"{pid:6d} {cpu:8.1f} {mem:6.1f} {name}")
+
+        except Exception:
+            rows = ["process list unavailable"]
+
+        # store full lines and refresh displayed slice
+        self._proc_lines = rows
+        # clamp scroll
+        self._proc_scroll = min(self._proc_scroll, max(0, len(self._proc_lines) - self._proc_visible))
+        self.update_process_display()
+
+    def update_process_display(self) -> None:
+        """Render the visible slice of the process list into the Static widget."""
+        visible = max(3, int(self._proc_visible))
+        start = max(0, min(self._proc_scroll, max(0, len(self._proc_lines) - visible)))
+        end = min(len(self._proc_lines), start + visible)
+        slice_lines = self._proc_lines[start:end]
+        text = "\n".join(slice_lines)
+        try:
+            self.query_one("#process-list", Static).update(text)
+        except Exception:
+            pass
 
 
 def run() -> None:
