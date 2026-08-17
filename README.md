@@ -121,4 +121,5 @@ discord -> whatwaffles
 
 enjoy!!
 
-current = ![alt text](image.png)
+current = <img width="1162" height="646" alt="image" src="https://github.com/user-attachments/assets/294a7ceb-4eb9-485c-8ac1-4854730c646e" />
+
